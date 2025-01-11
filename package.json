@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node index.js"
   },
-  "author": "@zlkcyber",
+  "author": "@zlkcyber (mod. abzalliance)",
   "license": "MIT",
   "description": "auto connect and ping openledger",
     "dependencies": {

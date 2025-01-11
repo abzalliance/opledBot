@@ -1,381 +1,495 @@
+/********************************************************************
+ * index.js
+ * OpenLedger Rewards Bot
+ * update
+ ********************************************************************/
+
+import fs from 'fs';
+import crypto from 'crypto';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
 import WebSocket from 'ws';
-import crypto from 'crypto';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
-import fs from 'fs';
+import dotenv from 'dotenv';
+
 import banner from './utils/banner.js';
 import log from './utils/logger.js';
 
+/********************************************************************
+ * 1. .env (if the file exists)
+ ********************************************************************/
+dotenv.config();
 
+/********************************************************************
+ * 2. (Endpoint, files, etc.)
+ ********************************************************************/
+const API_ENDPOINT     = process.env.API_ENDPOINT     || 'https://apitn.openledger.xyz';
+const REWARDS_ENDPOINT = process.env.REWARDS_ENDPOINT || 'https://rewardstn.openledger.xyz';
+const WS_ENDPOINT      = process.env.WS_ENDPOINT      || 'wss://apitn.openledger.xyz/ws/v1';
+const WALLETS_FILE     = process.env.WALLETS_FILE     || 'wallets.txt';
+const PROXY_FILE       = process.env.PROXY_FILE       || 'proxy.txt';
 
+// HTTP // (Headers) 
 const headers = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A_Brand";v="24"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-}
-
-function readFile(pathFile) {
-    try {
-        const datas = fs.readFileSync(pathFile, 'utf8')
-            .split('\n')
-            .map(data => data.trim())
-            .filter(data => data.length > 0);
-        return datas;
-    } catch (error) {
-        log.error(`Error reading file: ${error.message}`);
-        return [];
-    }
-}
-
-const newAgent = (proxy = null) => {
-    if (proxy && proxy.startsWith('http://')) {
-        return new HttpsProxyAgent(proxy);
-    } else if (proxy && (proxy.startsWith('socks4://') || proxy.startsWith('socks5://'))) {
-        return new SocksProxyAgent(proxy);
-    }
-    return null;
+  Accept: "application/json, text/plain, */*",
+  "Accept-Encoding": "gzip, deflate, br, zstd",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A_Brand";v="24"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 };
 
-class WebSocketClient {
-    constructor(authToken, address, proxy, index) {
-        this.url = `wss://apitn.openledger.xyz/ws/v1/orch?authToken=${authToken}`;
-        this.ws = null;
-        this.reconnect = true
-        this.index = index
-        this.intervalId = null
-        this.registered = false;
-        this.proxy = proxy;
-        this.address = address;
-        this.identity = btoa(address);
-        this.capacity = generateRandomCapacity();
-        this.id = crypto.randomUUID();
-        this.heartbeat = {
-            "message": {
-                "Worker": {
-                    "Identity": this.identity,
-                    "ownerAddress": this.address,
-                    "type": "LWEXT",
-                    "Host": "chrome-extension://ekbbplmjjgoobhdlffmgeokalelnmjjc"
-                },
-                Capacity: this.capacity
-            },
-            "msgType": "HEARTBEAT",
-            "workerType": "LWEXT",
-            "workerID": this.identity
-        };
+/********************************************************************
+ * 3. Helper functions (reading a file, creating an agent, etc.)
+ ********************************************************************/
 
-        this.regWorkerID = {
-            "workerID": this.identity,
-            "msgType": "REGISTER",
-            "workerType": "LWEXT",
-            "message": {
-                "id": this.id,
-                "type": "REGISTER",
-                "worker": {
-                    "host": "chrome-extension://ekbbplmjjgoobhdlffmgeokalelnmjjc",
-                    "identity": this.identity,
-                    "ownerAddress": this.address,
-                    "type": "LWEXT"
-                }
-            }
-        };
-    }
-
-    loadJobData = async (event) => {
-        if (event && event.data) {
-            const message = JSON.parse(event.data);
-
-            if (message?.MsgType == "JOB") {
-                this.ws.send(
-                    JSON.stringify({
-                        workerID: this.identity,
-                        msgType: "JOB_ASSIGNED",
-                        workerType: "LWEXT",
-                        message: {
-                            Status: true,
-                            Ref: message?.UUID,
-                        },
-                    })
-                );
-            }
-        }
-    };
-
-    connect() {
-        const agent = newAgent(this.proxy);
-        const options = agent ? { agent } : {};
-        this.ws = new WebSocket(this.url, options);
-
-        this.ws.on('open', (type) => {
-            log.info(`WebSocket connection established for account ${this.index}`);
-            // this.ws.send(JSON.stringify({
-            //     type: "WEBSOCKET_CONNECTED",
-            //     message: type,
-            // }))
-            // this.sendMessage({
-            //     type: "ALREADY_CONNECTED",
-            // });
-            if (!this.registered) {
-                log.info(`Trying to register worker ID for account ${this.index}...`);
-                this.sendMessage(this.regWorkerID);
-                this.registered = true;
-            }
-            this.intervalId = setInterval(() => {
-                log.info(`Sending heartbeat for account ${this.index}...`);
-                this.sendMessage(this.heartbeat)
-            }, 30 * 1000);
-        });
-
-        this.ws.on('message', (event) => {
-            const message = JSON.parse(event);
-            log.info(`Account ${this.index} Received message:`, message);
-            if (message && message.data) {
-                if (message?.data?.MsgType !== "JOB") {
-                    this.sendMessage({
-                        type: "WEBSOCKET_RESPONSE",
-                        data: message.data,
-                    });
-                } else {
-                    this.loadJobData(message);
-                }
-            }
-        });
-
-        this.ws.on('error', (error) => {
-            log.error(`WebSocket error for Account ${this.index}:`, error.message || error);
-        });
-
-        this.ws.on('close', () => {
-            clearInterval(this.intervalId);
-            if (this.reconnect) {
-                log.warn(`WebSocket connection closed for Account ${this.index}, reconnecting...`);
-                setTimeout(() => this.connect("reconnect"), 5000); // Reconnect after 5 seconds
-            } else {
-                log.warn(`WebSocket connection closed for Account ${this.index}`);
-            }
-        });
-    }
-
-    sendMessage(message) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(message));
-        } else {
-            log.error(`WebSocket connection is not open for Account ${this.index}, cannot send message.`);
-        }
-    }
-
-    close() {
-        if (this.ws) {
-            this.ws.close();
-            this.reconnect = false
-        }
-    }
+function readFile(pathFile) {
+  try {
+    const data = fs.readFileSync(pathFile, 'utf8');
+    return data
+      .split('\n')
+      .map(str => str.trim())
+      .filter(str => str.length > 0);
+  } catch (error) {
+    log.error(`Error reading file: ${error.message}`);
+    return [];
+  }
 }
 
+/**
+ * Creates an HTTPS or SOCKS agent if a proxy is specified
+ * @param {string|null} proxy 
+ * @returns {HttpsProxyAgent|SocksProxyAgent|null}
+ */
+function createAgent(proxy = null) {
+  if (!proxy) return null;
+
+  if (proxy.startsWith('http://') || proxy.startsWith('https://')) {
+    return new HttpsProxyAgent(proxy);
+  } else if (proxy.startsWith('socks4://') || proxy.startsWith('socks5://')) {
+    return new SocksProxyAgent(proxy);
+  }
+  return null;
+}
+
+/**
+ * Generates a random Capacity value
+ * @returns {Object}
+ */
+function generateRandomCapacity() {
+  /**
+   * The internal function is a random number with a certain accuracy
+   */
+  function getRandomFloat(min, max, decimals = 2) {
+    return (Math.random() * (max - min) + min).toFixed(decimals);
+  }
+
+  return {
+    AvailableMemory: parseFloat(getRandomFloat(10, 64)),
+    AvailableStorage: parseFloat(getRandomFloat(10, 500)),
+    AvailableGPU: '',
+    AvailableModels: []
+  };
+}
+
+/********************************************************************
+ * 4. Setting up axiosRetry (retry in case of network errors)
+ ********************************************************************/
 axiosRetry(axios, {
-    retries: 3,
-    retryDelay: (retryCount) => retryCount * 1000,
-    retryCondition: (error) => error.response?.status >= 400 || error.code === 'ECONNABORTED'
+  retries: 3,
+  retryDelay: (retryCount) => retryCount * 1000, // Each subsequent attempt is one second longer
+  retryCondition: (error) =>
+    error.response?.status >= 400 || error.code === 'ECONNABORTED'
 });
 
+/********************************************************************
+ * 5. Functions for working with the server (receiving a token, user information, etc.)
+ ********************************************************************/
+
+/**
+ * Генерує токен для вказаної адреси
+ * @param {Object} data { address: string }
+ * @param {string|null} proxy
+ * @returns {Promise<any|null>}
+ */
 async function generateToken(data, proxy) {
-    const agent = newAgent(proxy);
-    try {
-        const response = await axios.post('https://apitn.openledger.xyz/api/v1/auth/generate_token', data, {
-            headers: {
-                ...headers,
-                'Content-Type': 'application/json',
-            },
-            agent: agent
-        });
-        return response.data.data;
-    } catch (error) {
-        return null;
-    }
+  try {
+    const agent = createAgent(proxy);
+    const response = await axios.post(`${API_ENDPOINT}/api/v1/auth/generate_token`, data, {
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json',
+      },
+      httpsAgent: agent
+    });
+    return response.data.data; // { token: "...", ... }
+  } catch (error) {
+    log.error(`Error generating token: ${error.message}`);
+    return null;
+  }
 }
 
+/**
+ * Receives information about the user (number of points)
+ * @param {string} token 
+ * @param {string|null} proxy 
+ * @param {number} index 
+ * @returns {Promise<any>}
+ */
 async function getUserInfo(token, proxy, index) {
-    const agent = newAgent(proxy);
-    try {
-        const response = await axios.get('https://rewardstn.openledger.xyz/api/v1/reward_realtime', {
-            headers: {
-                ...headers,
-                'Authorization': 'Bearer ' + token
-            },
-            agent: agent
-        });
-        const { total_heartbeats } = response?.data?.data[0] || { total_heartbeats: '0' };
-        log.info(`Account ${index} has gained points today:`, { PointsToday: total_heartbeats });
-
-        return response.data.data;
-    } catch (error) {
-        if (error.response && error.response.status === 401) {
-            log.error('Unauthorized, token is invalid or expired');
-            return 'unauthorized';
-        };
-
-        log.error('Error fetching user info:', error.message || error);
-        return null;
+  try {
+    const agent = createAgent(proxy);
+    const response = await axios.get(`${REWARDS_ENDPOINT}/api/v1/reward_realtime`, {
+      headers: {
+        ...headers,
+        Authorization: `Bearer ${token}`
+      },
+      httpsAgent: agent
+    });
+    const { total_heartbeats } = response.data?.data?.[0] || { total_heartbeats: '0' };
+    log.info(`Account ${index} has gained points today: ${total_heartbeats}`);
+    return response.data.data;
+  } catch (error) {
+    if (error.response && error.response.status === 401) {
+      log.error(`Unauthorized (401): Token invalid/expired for account ${index}`);
+      return 'unauthorized';
     }
+    log.error(`Error fetching user info for account ${index}: ${error.message}`);
+    return null;
+  }
 }
 
+/**
+ * Receives details about the opportunity to “claim” daily rewards
+ * @param {string} token 
+ * @param {string|null} proxy 
+ * @param {number} index 
+ * @returns {Promise<any>}
+ */
 async function getClaimDetails(token, proxy, index) {
-    const agent = newAgent(proxy);
-    try {
-        const response = await axios.get('https://rewardstn.openledger.xyz/api/v1/claim_details', {
-            headers: {
-                ...headers,
-                'Authorization': 'Bearer ' + token
-            },
-            agent: agent
-        });
-        const { tier, dailyPoint, claimed, nextClaim = 'Not Claimed' } = response?.data?.data || {};
-        log.info(`Details for Account ${index}:`, { tier, dailyPoint, claimed, nextClaim });
-        return response.data.data;
-    } catch (error) {
-        log.error('Error fetching claim info:', error.message || error);
-        return null;
-    }
+  try {
+    const agent = createAgent(proxy);
+    const response = await axios.get(`${REWARDS_ENDPOINT}/api/v1/claim_details`, {
+      headers: {
+        ...headers,
+        Authorization: `Bearer ${token}`
+      },
+      httpsAgent: agent
+    });
+    const { tier, dailyPoint, claimed, nextClaim = 'Not Claimed' } = response.data?.data || {};
+    log.info(`Details for Account ${index}: tier=${tier}, dailyPoint=${dailyPoint}, claimed=${claimed}, nextClaim=${nextClaim}`);
+    return response.data.data;
+  } catch (error) {
+    log.error(`Error fetching claim info for account ${index}: ${error.message}`);
+    return null;
+  }
 }
 
+/**
+ * Causes an endpoint to receive (claim) rewards
+ * @param {string} token 
+ * @param {string|null} proxy 
+ * @param {number} index 
+ * @returns {Promise<any>}
+ */
 async function claimRewards(token, proxy, index) {
-    const agent = newAgent(proxy);
-    try {
-        const response = await axios.get('https://rewardstn.openledger.xyz/api/v1/claim_reward', {
-            headers: {
-                ...headers,
-                'Authorization': 'Bearer ' + token
-            },
-            agent: agent
-        });
-        log.info(`Daily Rewards Claimed for Account ${index}:`, response.data.data);
-        return response.data.data;
-    } catch (error) {
-        log.error('Error claiming daily reward:', error.message || error);
-        return null;
-    }
+  try {
+    const agent = createAgent(proxy);
+    const response = await axios.get(`${REWARDS_ENDPOINT}/api/v1/claim_reward`, {
+      headers: {
+        ...headers,
+        Authorization: `Bearer ${token}`
+      },
+      httpsAgent: agent
+    });
+    log.info(`Daily Rewards Claimed for Account ${index}: ${JSON.stringify(response.data.data)}`);
+    return response.data.data;
+  } catch (error) {
+    log.error(`Error claiming daily reward for account ${index}: ${error.message}`);
+    return null;
+  }
 }
 
-function generateRandomCapacity() {
-    function getRandomFloat(min, max, decimals = 2) {
-        return (Math.random() * (max - min) + min).toFixed(decimals);
-    }
+/********************************************************************
+ * 6. The WebSocketClient class - the logic of a WebSocket connection
+ ********************************************************************/
+class WebSocketClient {
+  constructor(authToken, address, proxy, index) {
+    this.address = address;
+    this.authToken = authToken;
+    this.proxy = proxy;
+    this.index = index;
 
-    return {
-        AvailableMemory: parseFloat(getRandomFloat(10, 64)),
-        AvailableStorage: getRandomFloat(10, 500),
-        AvailableGPU: '',
-        AvailableModels: []
+    // Generate unique values
+    this.identity = btoa(address); // base64
+    this.capacity = generateRandomCapacity();
+    this.id = crypto.randomUUID();
+
+    // Basic settings
+    this.url = `${WS_ENDPOINT}/orch?authToken=${authToken}`;
+    this.ws = null;
+    this.intervalId = null;
+    this.reconnect = true;
+    this.registered = false;
+
+    // Messages for heartbeat
+    this.heartbeat = {
+      message: {
+        Worker: {
+          Identity: this.identity,
+          ownerAddress: this.address,
+          type: "LWEXT",
+          Host: "chrome-extension://ekbbplmjjgoobhdlffmgeokalelnmjjc"
+        },
+        Capacity: this.capacity
+      },
+      msgType: "HEARTBEAT",
+      workerType: "LWEXT",
+      workerID: this.identity
     };
+
+    // Message for registration
+    this.regWorkerID = {
+      workerID: this.identity,
+      msgType: "REGISTER",
+      workerType: "LWEXT",
+      message: {
+        id: this.id,
+        type: "REGISTER",
+        worker: {
+          host: "chrome-extension://ekbbplmjjgoobhdlffmgeokalelnmjjc",
+          identity: this.identity,
+          ownerAddress: this.address,
+          type: "LWEXT"
+        }
+      }
+    };
+  }
+
+  /**
+   * Processing messages from a socket (JOB, other)
+   * @param {object} message
+   */
+  loadJobData = (message) => {
+    // If you receive a “JOB”
+    if (message?.MsgType === "JOB") {
+      this.ws.send(JSON.stringify({
+        workerID: this.identity,
+        msgType: "JOB_ASSIGNED",
+        workerType: "LWEXT",
+        message: {
+          Status: true,
+          Ref: message?.UUID
+        }
+      }));
+    }
+  }
+
+  /**
+   * Start a connection (event subscription and processing)
+   */
+  connect() {
+    const agent = createAgent(this.proxy);
+    const wsOptions = agent ? { agent } : {};
+
+    this.ws = new WebSocket(this.url, wsOptions);
+
+    this.ws.on('open', () => {
+      log.info(`[#${this.index}] WebSocket connection established`);
+
+      // We register (send data) only once
+      if (!this.registered) {
+        log.info(`[#${this.index}] Trying to register worker ID...`);
+        this.sendMessage(this.regWorkerID);
+        this.registered = true;
+      }
+
+      // We send heartbeats every 30 seconds
+      this.intervalId = setInterval(() => {
+        log.info(`[#${this.index}] Sending heartbeat...`);
+        this.sendMessage(this.heartbeat);
+      }, 30 * 1000);
+    });
+
+    this.ws.on('message', (rawData) => {
+      try {
+        const message = JSON.parse(rawData);
+        log.info(`[#${this.index}] Received message: ${JSON.stringify(message)}`);
+
+        // If it is “JOB” - call the handler
+        if (message?.data?.MsgType === "JOB") {
+          this.loadJobData(message.data);
+        } else {
+          // You can send a reply or take other actions
+        }
+      } catch (err) {
+        log.error(`[#${this.index}] Error parsing WebSocket message: ${err.message}`);
+      }
+    });
+
+    this.ws.on('error', (error) => {
+      log.error(`[#${this.index}] WebSocket error: ${error.message}`);
+    });
+
+    this.ws.on('close', () => {
+      clearInterval(this.intervalId);
+
+      if (this.reconnect) {
+        log.warn(`[#${this.index}] WebSocket closed, reconnecting in 5s...`);
+        setTimeout(() => this.connect(), 5000);
+      } else {
+        log.warn(`[#${this.index}] WebSocket closed, no reconnect`);
+      }
+    });
+  }
+
+  /**
+   * Securely send a message to a WebSocket
+   * @param {any} message
+   */
+  sendMessage(message) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    } else {
+      log.error(`[#${this.index}] WebSocket not open, cannot send: ${JSON.stringify(message)}`);
+    }
+  }
+
+  /**
+   * Close the connection and stop reconnects
+   */
+  close() {
+    if (this.ws) {
+      this.reconnect = false;
+      this.ws.close();
+    }
+  }
 }
 
-// Main function
-const main = async () => {
-    log.info(banner);
-    const wallets = readFile("wallets.txt")
+/********************************************************************
+ * 7. Main logic - sequential processing of wallets
+ ********************************************************************/
+async function main() {
+  // 1. Displaying the banner
+  log.info(banner);
 
-    if (wallets.length === 0) {
-        log.error('No wallets found in wallets.txt');
-        return;
-    }
+  // 2. Read the wallet and proxy
+  const wallets = readFile(WALLETS_FILE);
+  const proxies = readFile(PROXY_FILE);
 
-    const proxies = readFile("proxy.txt");
+  if (wallets.length === 0) {
+    log.error('No wallets found in file!');
+    return;
+  }
 
-    log.info(`Starting Program for all accounts:`, wallets.length);
+  log.info(`Starting program for all accounts. Count: ${wallets.length}`);
 
-    const accountsProcessing = wallets.map(async (address, index) => {
-        const proxy = proxies[index % proxies.length];
-        let isConnected = false;
+  // 3. Go through each wallet (asynchronously)
+  const accountsProcessing = wallets.map(async (address, idx) => {
+    // Select a proxy (cyclically if the list of proxies is shorter)
+    const proxy = proxies.length > 0 ? proxies[idx % proxies.length] : null;
+    const accountIndex = idx + 1; // so that the account starts with 1
 
+    log.info(`Account #${accountIndex} => Address: ${address} | Proxy: ${proxy || 'No proxy'}`);
 
-        log.info(`Processing Account ${index + 1} with proxy: ${proxy || 'No proxy'}`);
+    let isConnected = false;
+    let userInfoInterval;
+    let claimDetailsInterval;
 
-        let claimDetailsInterval;
-        let userInfoInterval;
+    while (!isConnected) {
+      try {
+        // 1. Get the token
+        let tokenResp = await generateToken({ address }, proxy);
+        // Check until success (tokenResp?.token exists)
+        while (!tokenResp || !tokenResp.token) {
+          log.warn(`[#${accountIndex}] Retry generating token in 3s...`);
+          await new Promise((res) => setTimeout(res, 3000));
+          tokenResp = await generateToken({ address }, proxy);
+        }
+        const token = tokenResp.token;
 
+        // 2. We withdraw part of the token (for security)
+        const obfuscatedToken = token.slice(0, 36) + '...' + token.slice(-8);
+        log.info(`[#${accountIndex}] Login success. token=${obfuscatedToken}`);
 
-        while (!isConnected) {
-            try {
-                let response = await generateToken({ address }, proxy);
-                while (!response && !response.token) {
-                    response = await generateToken({ address }, proxy);
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                }
-
-                const token = response.token;
-                log.info(`login success for Account ${index + 1}:`, token.slice(0, 36) + "-" + token.slice(-24));
-                log.info(`Getting user info and claim details for account ${index + 1}...`);
-                const claimDaily = await getClaimDetails(token, proxy, index + 1);
-                if (claimDaily && !claimDaily.claimed) {
-                    log.info(`Trying to Claim Daily rewards for Account ${index + 1}...`);
-                    await claimRewards(token, proxy, index + 1);
-                }
-                await getUserInfo(token, proxy, index + 1)
-
-                const socket = new WebSocketClient(token, address, proxy, index + 1);
-                socket.connect();
-                isConnected = true;
-
-                userInfoInterval = setInterval(async () => {
-                    log.info(`Fetching total points gained today for account ${index + 1}...`);
-                    const user = await getUserInfo(token, proxy, index + 1);
-
-                    if (user === 'unauthorized') {
-                        log.info(`Unauthorized: Token is invalid or expired for account ${index + 1}, reconnecting...`);
-
-                        isConnected = false;
-                        socket.close();
-                        clearInterval(userInfoInterval);
-                        clearInterval(claimDetailsInterval);
-                    }
-                }, 10 * 60 * 1000); // Fetch user points every 10 minutes
-
-                claimDetailsInterval = setInterval(async () => {
-                    try {
-                        log.info(`Checking Daily Rewards for Account ${index + 1}...`)
-                        const claimDetails = await getClaimDetails(token, proxy, index + 1);
-
-                        if (claimDetails && !claimDetails.claimed) {
-                            log.info(`Trying to Claim Daily rewards for Account ${index + 1}...`);
-                            await claimRewards(token, proxy, index + 1);
-                        }
-                    } catch (error) {
-                        log.error(`Error fetching claim details for Account ${index + 1}: ${error.message || 'unknown error'}`);
-                    }
-                }, 60 * 60 * 1000); // Fetch claim details every 60 minutes
-
-            } catch (error) {
-                log.error(`Failed to start WebSocket client for Account ${index + 1}:`, error.message || 'unknown error');
-                isConnected = false;
-
-                await new Promise(resolve => setTimeout(resolve, 3000));
-            }
+        // 3. Check daily rewards
+        const claimDaily = await getClaimDetails(token, proxy, accountIndex);
+        if (claimDaily && !claimDaily.claimed) {
+          log.info(`[#${accountIndex}] Trying to claim daily rewards...`);
+          await claimRewards(token, proxy, accountIndex);
         }
 
-        process.on('SIGINT', () => {
-            log.warn(`Process received SIGINT, cleaning up and exiting program...`);
-            clearInterval(claimDetailsInterval);
+        // Print the number of points scored
+        await getUserInfo(token, proxy, accountIndex);
+
+        // 4. Create a WS client and connect
+        const socket = new WebSocketClient(token, address, proxy, accountIndex);
+        socket.connect();
+        isConnected = true;
+
+        // 5. Start the intervals:
+        // a) We update information about points every 10 minutes
+        userInfoInterval = setInterval(async () => {
+          log.info(`[#${accountIndex}] Fetching total points...`);
+          const userData = await getUserInfo(token, proxy, accountIndex);
+          if (userData === 'unauthorized') {
+            log.warn(`[#${accountIndex}] Token expired/invalid, need re-login...`);
+            isConnected = false;
+            socket.close();
             clearInterval(userInfoInterval);
-            process.exit(0);
+            clearInterval(claimDetailsInterval);
+          }
+        }, 10 * 60 * 1000);
+
+        // b) Every 60 minutes, we check to see if the reward can be reclaimed
+        claimDetailsInterval = setInterval(async () => {
+          try {
+            log.info(`[#${accountIndex}] Checking daily rewards...`);
+            const cDetails = await getClaimDetails(token, proxy, accountIndex);
+            if (cDetails && !cDetails.claimed) {
+              log.info(`[#${accountIndex}] Trying to claim daily rewards...`);
+              await claimRewards(token, proxy, accountIndex);
+            }
+          } catch (err) {
+            log.error(`[#${accountIndex}] Error in claim details: ${err.message}`);
+          }
+        }, 60 * 60 * 1000);
+
+        /*******************************************************
+         * Process termination handler (ctrl+c / kill, etc.)
+         *******************************************************/
+        process.on('SIGINT', () => {
+          log.warn(`[#${accountIndex}] Received SIGINT. Exiting...`);
+          clearInterval(userInfoInterval);
+          clearInterval(claimDetailsInterval);
+          socket.close();
+          process.exit(0);
         });
 
         process.on('SIGTERM', () => {
-            log.warn(`Process received SIGTERM, cleaning up and exiting program...`);
-            clearInterval(claimDetailsInterval);
-            clearInterval(userInfoInterval);
-            process.exit(0);
+          log.warn(`[#${accountIndex}] Received SIGTERM. Exiting...`);
+          clearInterval(userInfoInterval);
+          clearInterval(claimDetailsInterval);
+          socket.close();
+          process.exit(0);
         });
 
-    });
+      } catch (err) {
+        log.error(`[#${accountIndex}] Main cycle error: ${err.message}`);
+        isConnected = false;
+        await new Promise((res) => setTimeout(res, 3000));
+      }
+    }
+  });
 
-    await Promise.all(accountsProcessing);
-};
+  await Promise.all(accountsProcessing);
+}
 
-//run
-main();
+/********************************************************************
+ * 8. Launching the main
+ ********************************************************************/
+main().catch(err => {
+  log.error(`Main function error: ${err.message}`);
+});

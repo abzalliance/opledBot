@@ -38,7 +38,7 @@
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/im-hanzou/opledBot.git
+   git clone https://github.com/abzalliance/opledBot.git
    cd opledBot
    ```
 2. Install dependencies:

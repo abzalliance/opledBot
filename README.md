@@ -3,7 +3,7 @@
 ![banner](image.png)
 
 
-- Website [https://openledger.xyz](https://testnet.openledger.xyz/?referral_code=pkf36oc2fa)
+- Website [https://openledger.xyz](https://testnet.openledger.xyz/?referral_code=jouubgypeu)
 - Twitter [@OpenledgerHQ](https://x.com/OpenledgerHQ)
 
 
@@ -16,25 +16,24 @@
 - **Support Proxy Usage (http/socks)**
 
 ## Requirements
-- **Register**: [https://testnet.openledger.xyz/](https://testnet.openledger.xyz/?referral_code=pkf36oc2fa)
+- **Register**: [https://testnet.openledger.xyz/](https://testnet.openledger.xyz/?referral_code=jouubgypeu)
 - **Node.js**: Ensure you have Node.js installed.
 - **npm**: Ensure you have npm installed.
 
 - **Wallets from open-ledger account**: how to get ???
-- **Go To dashboard** [https://openledger.xyz](https://testnet.openledger.xyz/?referral_code=pkf36oc2fa) and copy your wallet, look at image below:
+- **Go To dashboard** [https://openledger.xyz](https://testnet.openledger.xyz/?referral_code=jouubgypeu) and copy your wallet, look at image below:
 
    ![wallet](image-1.png)
 
 
 ### Buy Proxies
 - Free Proxies Static Residental: 
-1. [WebShare](https://www.webshare.io/?referral_code=p7k7whpdu2jg)
-2. [ProxyScrape](https://proxyscrape.com/?ref=odk1mmj)
-3. [MonoSans](https://github.com/monosans/proxy-list)
+1. [WebShare](https://www.webshare.io/?referral_code=bz3pxyb1tfhx)
+
 - Paid Premium Static Residental:
-1. [922proxy](https://www.922proxy.com/register?inviter_code=d03d4fed)
-2. [Proxy-Cheap](https://app.proxy-cheap.com/r/JysUiH)
-3. [Infatica](https://dashboard.infatica.io/aff.php?aff=544)
+1. [Nodemaven](https://nodemaven.com/?ref_id=a53214c5)
+2. [Proxy-Cheap](https://app.proxy-cheap.com/r/VjgFYE)
+
 ## Setup
 
 1. Clone this repository:

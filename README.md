@@ -34,6 +34,8 @@
 1. [Nodemaven](https://nodemaven.com/?ref_id=a53214c5)
 2. [Proxy-Cheap](https://app.proxy-cheap.com/r/VjgFYE)
 
+## Open Github [CodeSpace](https://github.com/features/codespaces)
+
 ## Setup
 
 1. Clone this repository:
